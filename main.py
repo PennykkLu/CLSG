@@ -70,8 +70,33 @@ class ModelTrainer(pl.LightningModule):
 
 
     def RBOLoss(self,scores,scores_ext,sigmoid_temp):
-        # 将在出版后公开
-        pass
+        p = 0.8
+        q = 10
+        topk = [20, 30, 40, 50, 60, 70, 80, 90, 100]
+        nll = []
+        for i, k in enumerate(topk):
+            kth_value = torch.topk(scores, k=k, dim=1)[0][:, -1]
+            diff_scores = scores - kth_value.unsqueeze(1)
+            sg_scores = self.sigmoid(diff_scores, temp=sigmoid_temp)
+            kth_value_ext = torch.topk(scores_ext, k=k, dim=1)[0][:, -1]
+            diff_scores_ext = scores_ext - kth_value_ext.unsqueeze(1)
+            sg_scores_ext = self.sigmoid(diff_scores_ext, temp=sigmoid_temp)
+
+            inter_MM = torch.matmul(sg_scores, sg_scores.T)
+            inter_MMe = torch.matmul(sg_scores, sg_scores_ext.T)
+            inter_MeM = torch.matmul(sg_scores_ext, sg_scores.T)
+            inter_MeMe = torch.matmul(sg_scores_ext, sg_scores_ext.T)
+            intersection = torch.cat(
+                (torch.cat((inter_MM, inter_MMe), dim=1), torch.cat((inter_MeM, inter_MeMe), dim=1)),
+                dim=0) / k
+            self_mask = torch.eye(intersection.shape[0], dtype=torch.bool, device=intersection.device)
+            intersection.masked_fill_(self_mask, -9e15)
+            pos_mask = self_mask.roll(shifts=intersection.shape[0] // 2, dims=0)
+
+            nll_k = -intersection[pos_mask] + torch.logsumexp(intersection, dim=-1) # Contrastive learning Loss
+            nll.append(nll_k.mean())
+        ssl_loss = sum(nll) / len(nll)
+        return ssl_loss
 
     def training_step(self, batch, batch_idx):
         beta_ListSim = 0.1
